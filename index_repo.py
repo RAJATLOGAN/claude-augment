@@ -68,6 +68,18 @@ def index_repo(repo_path: str, collection_name: str = "codebase"):
         print("No supported files found in the repository.")
         sys.exit(1)
 
+    # Skip documents that exceed the embedding model's context limit (~30k chars ≈ 8k tokens)
+    MAX_CHARS = 30000
+    filtered = [d for d in documents if len(d.text) <= MAX_CHARS]
+    skipped = len(documents) - len(filtered)
+    if skipped:
+        print(f"Skipped {skipped} file(s) exceeding {MAX_CHARS} char limit.")
+    documents = filtered
+
+    if not documents:
+        print("All files exceeded the size limit. Nothing to index.")
+        sys.exit(1)
+
     print(f"Found {len(documents)} files. Generating embeddings...\n")
 
     # Index documents

@@ -80,6 +80,13 @@ def do_index(repo_path: str, collection_name: str) -> str:
     if not documents:
         return "No supported files found in this repo."
 
+    # Skip documents that exceed the embedding model's context limit (~30k chars ≈ 8k tokens)
+    MAX_CHARS = 30000
+    documents = [d for d in documents if len(d.text) <= MAX_CHARS]
+
+    if not documents:
+        return "All files exceeded the size limit. Nothing to index."
+
     VectorStoreIndex.from_documents(
         documents,
         storage_context=storage_context,
