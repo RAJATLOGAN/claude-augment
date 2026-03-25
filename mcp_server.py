@@ -9,7 +9,6 @@ import sys
 import chromadb
 from fastmcp import FastMCP
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
-from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.chroma import ChromaVectorStore
@@ -81,11 +80,8 @@ def do_index(repo_path: str, collection_name: str) -> str:
     if not documents:
         return "No supported files found in this repo."
 
-    splitter = SentenceSplitter(chunk_size=512, chunk_overlap=50)
-    nodes = splitter.get_nodes_from_documents(documents)
-
-    VectorStoreIndex(
-        nodes,
+    VectorStoreIndex.from_documents(
+        documents,
         storage_context=storage_context,
         show_progress=False,
     )
