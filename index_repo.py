@@ -10,7 +10,6 @@ import argparse
 import chromadb
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
 from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import StorageContext
 
@@ -23,6 +22,17 @@ CODE_EXTENSIONS = [
     ".sh", ".env.example", ".sql", ".ipynb",
 ]
 
+EXCLUDE_DIRS = [
+    "**/node_modules/**", "**/.venv/**", "**/venv/**",
+    "**/dist/**", "**/build/**", "**/target/**",
+    "**/.next/**", "**/coverage/**", "**/.mypy_cache/**",
+    "**/__pycache__/**", "**/.git/**",
+]
+
+EXCLUDE_FILES = [
+    "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
+]
+
 CHROMA_DB_PATH = os.path.join(os.path.dirname(__file__), "chroma_db")
 
 
@@ -33,9 +43,8 @@ def index_repo(repo_path: str, collection_name: str = "codebase"):
     print(f"DB Path: {CHROMA_DB_PATH}")
     print(f"{'='*50}\n")
 
-    # Configure Ollama
+    # Configure Ollama embedding only (no LLM needed for indexing)
     Settings.embed_model = OllamaEmbedding(model_name="nomic-embed-text")
-    Settings.llm = Ollama(model="llama3.2", request_timeout=120.0)
 
     # Set up ChromaDB (persistent on disk)
     chroma_client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
@@ -47,7 +56,11 @@ def index_repo(repo_path: str, collection_name: str = "codebase"):
     except Exception:
         pass
 
-    chroma_collection = chroma_client.get_or_create_collection(collection_name)
+    # Use cosine distance so relevance scores are meaningful
+    chroma_collection = chroma_client.get_or_create_collection(
+        collection_name,
+        metadata={"hnsw:space": "cosine"},
+    )
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
@@ -59,6 +72,7 @@ def index_repo(repo_path: str, collection_name: str = "codebase"):
             recursive=True,
             required_exts=CODE_EXTENSIONS,
             exclude_hidden=True,
+            exclude=EXCLUDE_DIRS + EXCLUDE_FILES,
         ).load_data()
     except Exception as e:
         print(f"Error loading files: {e}")
@@ -82,7 +96,6 @@ def index_repo(repo_path: str, collection_name: str = "codebase"):
 
     print(f"Found {len(documents)} files. Generating embeddings...\n")
 
-    # Index documents
     VectorStoreIndex.from_documents(
         documents,
         storage_context=storage_context,

@@ -10,7 +10,6 @@ import chromadb
 from fastmcp import FastMCP
 from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
 from llama_index.embeddings.ollama import OllamaEmbedding
-from llama_index.llms.ollama import Ollama
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import StorageContext
 
@@ -22,6 +21,17 @@ CODE_EXTENSIONS = [
     ".rb", ".php", ".swift", ".kt", ".cs",
     ".md", ".txt", ".yaml", ".yml", ".toml", ".json",
     ".sh", ".sql", ".ipynb",
+]
+
+EXCLUDE_DIRS = [
+    "**/node_modules/**", "**/.venv/**", "**/venv/**",
+    "**/dist/**", "**/build/**", "**/target/**",
+    "**/.next/**", "**/coverage/**", "**/.mypy_cache/**",
+    "**/__pycache__/**", "**/.git/**",
+]
+
+EXCLUDE_FILES = [
+    "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
 ]
 
 mcp = FastMCP("codebase-search")
@@ -53,7 +63,6 @@ def collection_exists(collection_name: str) -> bool:
 def do_index(repo_path: str, collection_name: str) -> str:
     """Index a repo into ChromaDB. Returns a status string."""
     Settings.embed_model = get_embed_model()
-    Settings.llm = Ollama(model="llama3.2", request_timeout=120.0)
 
     client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
 
@@ -63,7 +72,11 @@ def do_index(repo_path: str, collection_name: str) -> str:
     except Exception:
         pass
 
-    chroma_collection = client.get_or_create_collection(collection_name)
+    # Use cosine distance so relevance scores are meaningful
+    chroma_collection = client.get_or_create_collection(
+        collection_name,
+        metadata={"hnsw:space": "cosine"},
+    )
     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
@@ -73,6 +86,7 @@ def do_index(repo_path: str, collection_name: str) -> str:
             recursive=True,
             required_exts=CODE_EXTENSIONS,
             exclude_hidden=True,
+            exclude=EXCLUDE_DIRS + EXCLUDE_FILES,
         ).load_data()
     except Exception as e:
         return f"Failed to load files: {e}"
@@ -96,7 +110,7 @@ def do_index(repo_path: str, collection_name: str) -> str:
     # Invalidate cached collection
     _collections.pop(collection_name, None)
 
-    return f"Indexed {len(documents)} files from '{repo_path}' into collection '{collection_name}'."
+    return f"Indexed {len(documents)} files ({len(nodes)} chunks) from '{repo_path}' into collection '{collection_name}'."
 
 
 def get_collection(collection_name: str):
@@ -122,18 +136,20 @@ def search_codebase(query: str, top_k: int = 5, collection: str = "", repo_path:
     else:
         repo_path, collection_name = get_repo_info()
 
-    # Auto-index if this repo hasn't been indexed yet (only for CWD-based detection)
-    if not collection and not repo_path and not collection_exists(collection_name):
+    # Auto-index if not indexed yet
+    if not collection_exists(collection_name):
+        if not repo_path:
+            return f"Collection '{collection_name}' not found. Index it first with index_repo.py."
         status = do_index(repo_path, collection_name)
         if "Failed" in status or "No supported" in status:
             return status
 
     try:
         embed_model = get_embed_model()
-        collection = get_collection(collection_name)
+        chroma_col = get_collection(collection_name)
 
         embedding = embed_model.get_text_embedding(query)
-        results = collection.query(
+        results = chroma_col.query(
             query_embeddings=[embedding],
             n_results=top_k,
             include=["documents", "metadatas", "distances"],
@@ -142,12 +158,13 @@ def search_codebase(query: str, top_k: int = 5, collection: str = "", repo_path:
         if not results["documents"] or not results["documents"][0]:
             return "No relevant code found for this query."
 
-        output = [f"Repo: {repo_path}\n"]
+        output = [f"Collection: {collection_name}\n"]
         for i, (doc, meta, dist) in enumerate(
             zip(results["documents"][0], results["metadatas"][0], results["distances"][0]),
             start=1,
         ):
             file_path = meta.get("file_path", meta.get("file_name", "unknown"))
+            # With cosine space: distance = 1 - cosine_similarity, so similarity = 1 - distance
             relevance = round((1 - dist) * 100, 1)
             output.append(
                 f"[{i}] {file_path} (relevance: {relevance}%)\n"
@@ -186,8 +203,8 @@ def index_status() -> str:
         )
 
     try:
-        collection = get_collection(collection_name)
-        count = collection.count()
+        chroma_col = get_collection(collection_name)
+        count = chroma_col.count()
         return (
             f"Repo: {repo_path}\n"
             f"Collection: {collection_name}\n"
