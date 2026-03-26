@@ -5,34 +5,16 @@ auto-indexes it if not already indexed, then exposes search to Claude Code.
 """
 
 import os
-import sys
 import chromadb
 from fastmcp import FastMCP
-from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.vector_stores.chroma import ChromaVectorStore
 from llama_index.core import StorageContext
-
-CHROMA_DB_PATH = os.path.join(os.path.dirname(__file__), "chroma_db")
-
-CODE_EXTENSIONS = [
-    ".py", ".ts", ".tsx", ".js", ".jsx",
-    ".go", ".java", ".rs", ".cpp", ".c", ".h",
-    ".rb", ".php", ".swift", ".kt", ".cs",
-    ".md", ".txt", ".yaml", ".yml", ".toml", ".json",
-    ".sh", ".sql", ".ipynb",
-]
-
-EXCLUDE_DIRS = [
-    "**/node_modules/**", "**/.venv/**", "**/venv/**",
-    "**/dist/**", "**/build/**", "**/target/**",
-    "**/.next/**", "**/coverage/**", "**/.mypy_cache/**",
-    "**/__pycache__/**", "**/.git/**",
-]
-
-EXCLUDE_FILES = [
-    "**/package-lock.json", "**/yarn.lock", "**/pnpm-lock.yaml",
-]
+from code_indexer import (
+    perform_indexing,
+    get_collection_name_from_path,
+    CHROMA_DB_PATH,
+)
 
 mcp = FastMCP("codebase-search")
 
@@ -51,7 +33,7 @@ def get_embed_model():
 def get_repo_info():
     """Returns (repo_path, collection_name) based on CWD."""
     cwd = os.getcwd()
-    collection_name = os.path.basename(cwd).replace(" ", "_").replace("-", "_").lower()
+    collection_name = get_collection_name_from_path(cwd)
     return cwd, collection_name
 
 
@@ -62,55 +44,16 @@ def collection_exists(collection_name: str) -> bool:
 
 def do_index(repo_path: str, collection_name: str) -> str:
     """Index a repo into ChromaDB. Returns a status string."""
-    Settings.embed_model = get_embed_model()
-
-    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
-
-    # Drop and recreate for fresh index
-    try:
-        client.delete_collection(collection_name)
-    except Exception:
-        pass
-
-    # Use cosine distance so relevance scores are meaningful
-    chroma_collection = client.get_or_create_collection(
-        collection_name,
-        metadata={"hnsw:space": "cosine"},
-    )
-    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
-    try:
-        documents = SimpleDirectoryReader(
-            input_dir=repo_path,
-            recursive=True,
-            required_exts=CODE_EXTENSIONS,
-            exclude_hidden=True,
-            exclude=EXCLUDE_DIRS + EXCLUDE_FILES,
-        ).load_data()
-    except Exception as e:
-        return f"Failed to load files: {e}"
-
-    if not documents:
-        return "No supported files found in this repo."
-
-    # Skip documents that exceed the embedding model's context limit (~30k chars ≈ 8k tokens)
-    MAX_CHARS = 30000
-    documents = [d for d in documents if len(d.text) <= MAX_CHARS]
-
-    if not documents:
-        return "All files exceeded the size limit. Nothing to index."
-
-    VectorStoreIndex.from_documents(
-        documents,
-        storage_context=storage_context,
-        show_progress=False,
+    status = perform_indexing(
+        repo_path=repo_path,
+        collection_name=collection_name,
+        embed_model=get_embed_model(),
+        show_progress=False
     )
 
     # Invalidate cached collection
     _collections.pop(collection_name, None)
-
-    return f"Indexed {len(documents)} files ({len(nodes)} chunks) from '{repo_path}' into collection '{collection_name}'."
+    return status
 
 
 def get_collection(collection_name: str):
@@ -130,7 +73,7 @@ def search_codebase(query: str, top_k: int = 5, collection: str = "", repo_path:
     Use list_indexed_repos to see available collection names.
     """
     if repo_path:
-        collection_name = os.path.basename(repo_path).replace(" ", "_").replace("-", "_").lower()
+        collection_name = get_collection_name_from_path(repo_path)
     elif collection:
         collection_name = collection
     else:

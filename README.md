@@ -34,11 +34,9 @@ Everything runs **100% locally** — no code leaves your machine.
 - Python 3.10+
 - [Ollama](https://ollama.com) running locally with:
   - `nomic-embed-text` model (for embeddings)
-  - `llama3.2` model (used by LlamaIndex internally)
 
 ```bash
 ollama pull nomic-embed-text
-ollama pull llama3.2
 ```
 
 ---
